@@ -1,0 +1,9 @@
+langgraph
+openai
+pydantic
+requests
+deepinfra
+fastapi
+uvicorn
+nbformat
+qdrant-client==1.12.1

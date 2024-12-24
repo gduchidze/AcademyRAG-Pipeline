@@ -1,0 +1,190 @@
+import nbformat
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
+import time, uuid
+
+
+class NotebookProcessor:
+    def __init__(self):
+        self.openai_client = OpenAI(
+            api_key="hHnQ6vbPMRKj7eCs5IG6QmjFTyYjVccW",
+            base_url="https://api.deepinfra.com/v1/openai"
+        )
+        self.qdrant_client = QdrantClient("localhost", port=6333)
+        self.collection_name = "jupyter_notebook_test_2"
+        self.chunk_size = 512
+
+    def create_collection(self):
+        self.qdrant_client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
+        )
+        print("Collection created successfully")
+
+    def extract_text_content(self, notebook):
+        content = []
+        for cell in notebook.cells:
+            if cell.cell_type == 'markdown':
+                text = cell.source
+                if '![' not in text:
+                    content.append(f"Markdown:\n{text}")
+            elif cell.cell_type == 'code':
+                content.append(f"Code:\n{cell.source}")
+                if cell.outputs:
+                    for output in cell.outputs:
+                        if 'text' in output:
+                            content.append(f"Output:\n{str(output.text)}")
+        return "\n\n".join(content)
+
+    def create_chunks(self, text):
+        words = text.split()
+        chunks = []
+        current_chunk = []
+        current_size = 0
+
+        for word in words:
+            current_size += len(word.split())
+            current_chunk.append(word)
+
+            if current_size >= self.chunk_size:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+
+        return chunks
+
+    def process_notebook(self, notebook_path):
+        start_time = time.time()
+        try:
+            print(f"\nProcessing notebook: {notebook_path}")
+
+            with open(notebook_path, 'r', encoding='utf-8') as f:
+                nb = nbformat.read(f, as_version=4)
+
+            text_content = self.extract_text_content(nb)
+            print(f"Total text length: {len(text_content)} characters")
+            print(f"Total cells: {len(nb.cells)}")
+
+            chunks = self.create_chunks(text_content)
+            print(f"Created {len(chunks)} chunks")
+
+            for i, chunk in enumerate(chunks):
+                print(f"Processing chunk {i + 1}/{len(chunks)}")
+
+                embedding = self.openai_client.embeddings.create(
+                    model="BAAI/bge-m3",
+                    input=chunk,
+                    encoding_format="float"
+                ).data[0].embedding
+
+                self.qdrant_client.upsert(
+                    collection_name=self.collection_name,
+                    points=[PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=embedding,
+                        payload={
+                            "text": chunk,
+                            "chunk_num": i,
+                            "file": notebook_path
+                        }
+                    )]
+                )
+                time.sleep(0.5)
+
+            duration = time.time() - start_time
+            print(f"\nProcessing completed:")
+            print(f"File: {notebook_path}")
+            print(f"Time taken: {duration:.2f} seconds")
+            print(f"Total chunks processed: {len(chunks)}")
+            print("Status: Success")
+            return True
+
+        except Exception as e:
+            print(f"Error processing notebook: {str(e)}")
+            return False
+
+    def search_content(self, query_text, limit=3):
+        try:
+            print(f"\nSearching for: '{query_text}'")
+
+            query_embedding = self.openai_client.embeddings.create(
+                model="BAAI/bge-m3",
+                input=query_text,
+                encoding_format="float"
+            ).data[0].embedding
+
+            results = self.qdrant_client.search(
+                collection_name=self.collection_name,
+                query_vector=query_embedding,
+                limit=limit
+            )
+
+            print("\nSearch Results:")
+            print("-" * 50)
+
+            for i, result in enumerate(results, 1):
+                print(f"\nResult {i}")
+                print(f"Similarity Score: {result.score:.2f}")
+                print(f"File: {result.payload['file']}")
+                print(f"Chunk: {result.payload['chunk_num']}")
+                print("Content:")
+                print("-" * 20)
+                print(result.payload['text'][:200] + "...")
+                print("-" * 50)
+
+        except Exception as e:
+            print(f"Search error: {str(e)}")
+
+    def check_collection(self):
+        try:
+            collection_info = self.qdrant_client.get_collection(self.collection_name)
+            points_count = self.qdrant_client.count(
+                collection_name=self.collection_name
+            ).count
+
+            print("\nCollection Info:")
+            print(f"Name: {self.collection_name}")
+            print(f"Total points: {points_count}")
+            print(f"Vector size: {collection_info.config.params.vector_size}")
+            print(f"Distance: {collection_info.config.params.distance}")
+
+        except Exception as e:
+            print(f"Error checking collection: {str(e)}")
+
+
+# def main():
+#     print("Starting notebook processing...")
+#     processor = NotebookProcessor()
+#
+#     print("\nStep 1: Creating collection")
+#     processor.create_collection()
+#
+#     print("\nStep 2: Processing notebook")
+#     processor.process_notebook("test_notebook/test.ipynb")
+
+def main():
+    processor = NotebookProcessor()
+
+    processor.search_content("წრფივი რეგრესია")
+
+    test_queries = [
+        "დახრილობა",
+        "გადაკვეთის წერტილი",
+
+    ]
+
+    for query in test_queries:
+        processor.search_content(query)
+        print("\n" + "=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    main()
+
+
+if __name__ == "__main__":
+    main()
